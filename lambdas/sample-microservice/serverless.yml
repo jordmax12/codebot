@@ -1,0 +1,18 @@
+service: sample-microservice
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: dev
+functions:
+  getUser:
+    handler: handler.getUser
+    events:
+      - http:
+          path: users/{id}
+          method: get
+  createUser:
+    handler: handler.createUser
+    events:
+      - http:
+          path: users
+          method: post
