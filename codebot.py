@@ -3,16 +3,15 @@ import os
 import gradio as gr
 import openai
 import requests
-import tiktoken
-import faiss
-import numpy as np
-import re
 from anthropic import Anthropic
 from datetime import datetime
 from dotenv import load_dotenv
+import tiktoken
 from sentence_transformers import SentenceTransformer 
+import faiss
+import numpy as np
+import re
 
-# Models (unchanged)
 OLLAMA_MODEL = 'llama3.2'
 OLLAMA_HOST = "http://localhost:11434/v1"
 OPENAI_MODEL = "gpt-4o-mini"
@@ -25,7 +24,6 @@ GROK_HOST = "https://api.x.ai/v1"
 
 load_dotenv()
 
-# Client classes (unchanged)
 class Client:
     def __init__(self, api_key, model=OLLAMA_MODEL, host=OLLAMA_HOST):
         self.client = openai.OpenAI(base_url=host, api_key=api_key)
@@ -140,8 +138,8 @@ class CodeBot:
         full_path = os.path.join(self.root_dir, microservice, file_path)
         if os.path.exists(full_path):
             with open(full_path, "r") as f:
-                return self.minify_code(f.read())[:2000]
-        return "File not found."
+                return self.minify_code(f.read())[:3000]
+        return "Not found."
     
     def estimate_tokens(self, text):
         if self.model_type in ["openai", "grok"]:
@@ -162,38 +160,25 @@ class CodeBot:
                 retrieved.append((microservice, file_path, content))
         return retrieved
     
-    def summarize_index(self):
-        summary = []
-        for microservice, data in self.index["microservices"].items():
-            files = []
-            for file_type in ["serverless_functions", "helpers", "controllers"]:
-                for entry in data.get(file_type, []):
-                    if "file" in entry:
-                        files.append(f"{file_type[0]}:{entry['file']}")
-            summary.append(f"{microservice}:[{','.join(files)}]")
-        return ";".join(summary)
-    
-    def build_prompt(self, question, chat_history=None, retrieved_files=None):
-        index_summary = self.summarize_index()
-        prompt = f"CodeBot: Codebase in `{self.root_dir}`. Index: {index_summary}. Q: {question}"
-        if chat_history:
-            prompt += "\nHist:"
-            for msg in chat_history[-3:]:
-                prompt += f"{msg['role'][0]}:{msg['content'][:100]}|"
+    def build_prompt(self, question, retrieved_files=None, reasoning=""):
+        prompt = f"Q: {question}\n"
         if retrieved_files:
-            prompt += "\nFiles:"
+            prompt += "Files:"
             for microservice, file_path, content in retrieved_files:
-                prompt += f"{microservice}/{file_path}:{content[:500]};"
-        prompt += "\nMore files? Suggest fetch <microservice>/<file>. Answer fully if possible."
+                prompt += f"{microservice}/{file_path}:{content[:3000]};"
+        if reasoning:
+            prompt += f"\nReasoning: {reasoning[:3000]}"
+        prompt += "\nAnswer fully or suggest files to fetch (<microservice>/<file>)."
         return prompt
     
-    def process_stream(self, question, microservice, history, max_iterations=3):
+    def process_stream(self, question, microservice, history, max_iterations=5):
         timestamp = datetime.now().strftime("%H:%M:%S")
         history.append({"role": "user", "content": f"**You @ {timestamp}**: {question}"})
         yield history, gr.update(value="Calculating...")
         
+        # Initial file set
         retrieved_files = self.retrieve_relevant_files(question) if not microservice else []
-        if microservice:  # If microservice selected, prioritize its files
+        if microservice:
             for file_type in ["serverless_functions", "helpers", "controllers"]:
                 for entry in self.index["microservices"][microservice].get(file_type, []):
                     if "file" in entry:
@@ -203,9 +188,12 @@ class CodeBot:
         iteration = 0
         full_response = ""
         total_tokens = 0
+        reasoning = ""
         
         while iteration < max_iterations:
-            prompt = self.build_prompt(question, history, retrieved_files)
+            prompt = self.build_prompt(question, retrieved_files, reasoning)
+            print(f"\n\nLogging Prompt: {prompt}\n\n")
+            print(f"\n\nLogging iteration: {iteration}\n\n")
             prompt_tokens = self.estimate_tokens(prompt)
             response = ""
             
@@ -221,26 +209,44 @@ class CodeBot:
             full_response += response
             response_tokens = self.estimate_tokens(response)
             total_tokens += prompt_tokens + response_tokens
+            print(f"\n\nLogging total_tokens: {total_tokens}\n\n")
             
-            # Check for fetch suggestions and process them
+            # Look for fetch suggestions or signs of incomplete reasoning
             fetch_pattern = re.compile(r"fetch\s+([^\s/]+)/([^\s]+)")
             fetches = fetch_pattern.findall(response)
-            if fetches and iteration < max_iterations - 1:
-                for microservice_to_fetch, file_path in fetches:
-                    if (microservice_to_fetch, file_path) not in [(m, f) for m, f, _ in retrieved_files]:
-                        file_content = self.read_file(microservice_to_fetch, file_path)
-                        if file_content != "File not found.":
-                            retrieved_files.append((microservice_to_fetch, file_path, file_content))
-                            full_response += f"\nFetched {microservice_to_fetch}/{file_path}"
-                            history[-1]["content"] = f"**CodeBot {model_display} @ {timestamp}**: {full_response}"
-                            yield history, gr.update(value="Calculating...")
+            needs_more = "not found" in response.lower() or "don’t know" in response.lower() or fetches
+            print(f"\n\nLogging needs_more: {needs_more}\n\n")
+            if needs_more and iteration < max_iterations - 1:
+                if fetches:
+                    for microservice_to_fetch, file_path in fetches:
+                        if (microservice_to_fetch, file_path) not in [(m, f) for m, f, _ in retrieved_files]:
+                            file_content = self.read_file(microservice_to_fetch, file_path)
+                            if file_content != "Not found.":
+                                retrieved_files.append((microservice_to_fetch, file_path, file_content))
+                                full_response += f"\nFetched {microservice_to_fetch}/{file_path}"
+                                history[-1]["content"] = f"**CodeBot {model_display} @ {timestamp}**: {full_response}"
+                                yield history, gr.update(value="Calculating...")
+                else:
+                    # Reasoning step if no explicit fetch: guess next files
+                    reasoning_prompt = f"Q: {question}\nCurrent answer: {response[:200]}\nWhat files might help answer this better?"
+                    reasoning_response = "".join(self.client.stream_query(reasoning_prompt))
+                    new_fetches = fetch_pattern.findall(reasoning_response)
+                    if new_fetches:
+                        for microservice_to_fetch, file_path in new_fetches:
+                            if (microservice_to_fetch, file_path) not in [(m, f) for m, f, _ in retrieved_files]:
+                                file_content = self.read_file(microservice_to_fetch, file_path)
+                                if file_content != "Not found.":
+                                    retrieved_files.append((microservice_to_fetch, file_path, file_content))
+                                    full_response += f"\nFetched {microservice_to_fetch}/{file_path}"
+                                    history[-1]["content"] = f"**CodeBot {model_display} @ {timestamp}**: {full_response}"
+                                    yield history, gr.update(value="Calculating...")
+                    reasoning = reasoning_response[:200]  # Keep reasoning concise
                 iteration += 1
             else:
-                break  # Exit if no fetches or max iterations reached
+                break
         
         yield history, total_tokens
 
-# Interface (unchanged except process_stream signature)
 def create_interface():
     bot = CodeBot()
     microservices = sorted(list(bot.index["microservices"].keys()))

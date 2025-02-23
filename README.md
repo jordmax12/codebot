@@ -6,7 +6,8 @@ A local chatbot for understanding a serverless codebase.
 1. Activate the Anaconda environment: `conda activate codebot`
 2. Install dependencies: `conda install pyyaml requests`
 3. Install additional dependencies: `pip install gradio openai python-dotenv anthropic tiktoken`
-4. Run Ollama in a separate terminal: `ollama run codellama`
+4. Download Llama3.2 from Ollama in a separate terminal: `ollama pull llama3.2`
+5. Setup .env file using the .sample.env file. Will need API keys from: OpenAI, Anthropic and xAI.
 5. Place this app in the parent directory of `lambdas/`.
 
 ## Usage
