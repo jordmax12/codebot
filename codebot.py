@@ -236,7 +236,7 @@ def create_interface():
                     question_input = gr.Textbox(placeholder="Ask about your codebase...", label="Your Question", scale=3)
                     send_button = gr.Button("Send", variant="primary", scale=1)
         
-        gr.Markdown("Built with ❤️ by Jordan | Feb 22, 2025", elem_classes=["footer"])
+        gr.Markdown("Built by Jordan", elem_classes=["footer"])
 
         chat_history = gr.State([])  # Persistent chat history
         selected_microservice = gr.State(microservices[0])  # Track selected microservice
